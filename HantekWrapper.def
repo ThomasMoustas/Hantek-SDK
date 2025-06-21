@@ -1,0 +1,11 @@
+EXPORTS
+connectToProxy
+disconnectFromProxy
+dsoOpenDevice
+dsoChooseDevice
+dsoSetTimeDIV
+dsoReadHardData_LA
+startStreaming
+stopStreaming
+getStreamData
+getQueueStatus
