@@ -1,0 +1,5 @@
+EXPORTS
+dsoOpenDevice
+dsoChooseDevice
+dsoSetTimeDIV
+dsoReadHardData_LA
