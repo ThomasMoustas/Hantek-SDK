@@ -15,6 +15,8 @@ typedef short(__stdcall *LPFN_DSOOPENDEVICE)(unsigned short);
 typedef unsigned short(__stdcall *LPFN_DSOCHOOSEDEVICE)(unsigned short, short);
 typedef short(__stdcall *LPFN_DSOSETTIMEDIV)(unsigned short, int);
 typedef short(__stdcall *LPFN_DSOREADHARDDATA_LA)(unsigned short, short*, short*, unsigned long, int);
+typedef short(__stdcall *LPFN_DSOSETVOLTDIV)(unsigned short, int, int);
+typedef short(__stdcall *LPFN_DSOGETCALLEVEL)(unsigned short, short*, short);
 
 // Largest nReadLen HTMarch's dsoReadHardData_LA can serve: it always captures
 // 1048576 samples and returns them after skipping the first 1024, so larger
@@ -23,6 +25,13 @@ const unsigned long MAX_READ_LEN = 1047552;
 
 // HTMarch's sample-rate table has 39 entries (nTimeDIV 0..38).
 const int MAX_TIME_DIV = 38;
+
+// HTMarch's volt/div table has 8 entries (nVoltDIV 0..7 = 20 mV .. 5 V per div).
+const int MAX_VOLT_DIV = 7;
+
+// dsoGetCalLevel reads 128 bytes of calibration data from the scope's EEPROM
+// into a 128-byte buffer and copies nLen of them without checking nLen.
+const short MAX_CAL_LEN = 128;
 
 // Result sent back for a request the proxy refuses (unknown command, wrong
 // message size, invalid argument), so the client never waits for a reply
@@ -35,6 +44,8 @@ const DWORD REQUEST_SIZE[] = {
     8,  // 1 dsoChooseDevice:    + short nType
     10, // 2 dsoSetTimeDIV:      + int nTimeDIV
     14, // 3 dsoReadHardData_LA: + unsigned long nReadLen + int nTimeDIV (ignored)
+    14, // 4 dsoSetVoltDIV:      + int nCH + int nVoltDIV
+    8,  // 5 dsoGetCalLevel:     + short nLen
 };
 const int NUM_COMMANDS = sizeof(REQUEST_SIZE) / sizeof(REQUEST_SIZE[0]);
 
@@ -96,8 +107,11 @@ int main() {
     LPFN_DSOCHOOSEDEVICE dsoChooseDevice = (LPFN_DSOCHOOSEDEVICE)GetProcAddress(hDso, "dsoChooseDevice");
     LPFN_DSOSETTIMEDIV dsoSetTimeDIV = (LPFN_DSOSETTIMEDIV)GetProcAddress(hDso, "dsoSetTimeDIV");
     LPFN_DSOREADHARDDATA_LA dsoReadHardData_LA = (LPFN_DSOREADHARDDATA_LA)GetProcAddress(hDso, "dsoReadHardData_LA");
+    LPFN_DSOSETVOLTDIV dsoSetVoltDIV = (LPFN_DSOSETVOLTDIV)GetProcAddress(hDso, "dsoSetVoltDIV");
+    LPFN_DSOGETCALLEVEL dsoGetCalLevel = (LPFN_DSOGETCALLEVEL)GetProcAddress(hDso, "dsoGetCalLevel");
 
-    if (!dsoOpenDevice || !dsoChooseDevice || !dsoSetTimeDIV || !dsoReadHardData_LA) {
+    if (!dsoOpenDevice || !dsoChooseDevice || !dsoSetTimeDIV || !dsoReadHardData_LA ||
+        !dsoSetVoltDIV || !dsoGetCalLevel) {
         Log("Fatal Error: Could not get function addresses from HTMarch.dll.");
         FreeLibrary(hDso);
         return 1;
@@ -220,6 +234,39 @@ int main() {
 
                     delete[] pData1;
                     delete[] pData2;
+                    break;
+                }
+                case 4: { // dsoSetVoltDIV
+                    int nCH = *reinterpret_cast<int*>(buffer + 6);
+                    int nVoltDIV = *reinterpret_cast<int*>(buffer + 10);
+                    // HTMarch treats any nCH other than 1 as CH1 and checks only
+                    // nVoltDIV < 8 (signed).
+                    short result = PROXY_BAD_REQUEST;
+                    if ((nCH == 0 || nCH == 1) && nVoltDIV >= 0 && nVoltDIV <= MAX_VOLT_DIV) {
+                        result = dsoSetVoltDIV(deviceIndex, nCH, nVoltDIV);
+                    } else {
+                        Log("Rejected dsoSetVoltDIV: nCH " + std::to_string(nCH) +
+                            ", nVoltDIV " + std::to_string(nVoltDIV));
+                    }
+                    ok = WriteMessage(pipe, &result, sizeof(result));
+                    break;
+                }
+                case 5: { // dsoGetCalLevel
+                    short nLen = *reinterpret_cast<short*>(buffer + 6);
+                    if (nLen <= 0 || nLen > MAX_CAL_LEN) {
+                        Log("Rejected dsoGetCalLevel: nLen " + std::to_string(nLen) +
+                            " (allowed 1.." + std::to_string(MAX_CAL_LEN) + ")");
+                        short result = PROXY_BAD_REQUEST;
+                        ok = WriteMessage(pipe, &result, sizeof(result));
+                        break;
+                    }
+                    short level[MAX_CAL_LEN];
+                    short result = dsoGetCalLevel(deviceIndex, level, nLen);
+                    // The calibration levels follow only a successful read.
+                    ok = WriteMessage(pipe, &result, sizeof(result));
+                    if (ok && result > 0) {
+                        ok = WriteMessage(pipe, level, nLen * sizeof(short));
+                    }
                     break;
                 }
             }

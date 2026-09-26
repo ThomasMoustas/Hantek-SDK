@@ -50,3 +50,26 @@ EXPORT short __stdcall dsoReadHardData_LA(unsigned short DeviceIndex, short *pDa
 	}
 	return 1;
 }
+
+EXPORT short __stdcall dsoSetVoltDIV(unsigned short DeviceIndex, int nCH, int nVoltDIV)
+{
+	(void)nCH;
+	if (nVoltDIV < 0)
+		abort(); /* real DLL: indexes before its gain table */
+	if (DeviceIndex != 0 || nVoltDIV >= 8)
+		return 0;
+	return 1;
+}
+
+EXPORT short __stdcall dsoGetCalLevel(unsigned short DeviceIndex, short *level, short nLen)
+{
+	short i;
+
+	if (nLen > 128)
+		abort(); /* real DLL: copies past its 128-byte buffer */
+	if (DeviceIndex != 0)
+		return 0;
+	for (i = 0; i < nLen; i++)
+		level[i] = (short)(100 + i);
+	return 1;
+}

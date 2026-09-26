@@ -102,6 +102,24 @@ int main() {
     CHECK(dsoReadHardData_LA(1, a.data(), b.data(), 10, 0) == -1);
     CHECK(dsoOpenDevice(0) == 1);
 
+    printf("-- volt/div and calibration\n");
+    CHECK(dsoSetVoltDIV(0, 0, 5) == 1);
+    CHECK(dsoSetVoltDIV(0, 1, 7) == 1);
+    CHECK(dsoSetVoltDIV(0, 2, 5) == -2);  // no channel 2
+    CHECK(dsoSetVoltDIV(0, 0, 8) == -2);
+    CHECK(dsoSetVoltDIV(0, 0, -1) == -2); // would index before the DLL's table
+    CHECK(dsoSetVoltDIV(1, 0, 5) == 0);   // DLL failure
+    short cal[129];
+    CHECK(dsoGetCalLevel(0, cal, 32) == 1);
+    bool calOk = true;
+    for (int i = 0; i < 32; ++i) calOk = calOk && cal[i] == 100 + i;
+    CHECK(calOk);
+    CHECK(dsoGetCalLevel(0, cal, 128) == 1 && cal[127] == 227);
+    CHECK(dsoGetCalLevel(0, cal, 129) == -2);
+    CHECK(dsoGetCalLevel(0, cal, 0) == -2);
+    CHECK(dsoGetCalLevel(1, cal, 32) == 0); // DLL failure, no data follows...
+    CHECK(dsoOpenDevice(0) == 1);           // ...and the pipe is still in step
+
     printf("-- invalid requests sent straight to the pipe\n");
     disconnectFromProxy();
     HANDLE raw = RawConnect();
@@ -121,6 +139,9 @@ int main() {
             ReadFile(raw, a.data(), 32, &n, NULL);
             ReadFile(raw, b.data(), 32, &n, NULL);
         }
+        *reinterpret_cast<int*>(msg) = 5;
+        *reinterpret_cast<short*>(msg + 6) = 200;               // more calibration levels than exist
+        CHECK(RawRequest(raw, msg, 8) == -2);
         *reinterpret_cast<int*>(msg) = 99;                      // unknown command
         CHECK(RawRequest(raw, msg, 6) == -2);
         CHECK(RawRequest(raw, msg, 3) == -2);                   // shorter than a header

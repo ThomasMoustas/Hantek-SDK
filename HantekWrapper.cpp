@@ -11,8 +11,10 @@ HANDLE g_pipe = INVALID_HANDLE_VALUE;
 
 static const wchar_t PIPE_NAME[] = L"\\\\.\\pipe\\HantekPipe";
 
-// Same limit as in HantekProxy.exe: the largest capture HTMarch.dll can return.
+// Same limits as in HantekProxy.exe: the largest capture HTMarch.dll can
+// return, and the most calibration levels dsoGetCalLevel can read.
 static const unsigned long MAX_READ_LEN = 1047552;
+static const short MAX_CAL_LEN = 128;
 
 // Drops the connection. Called after any pipe error: at that point requests
 // and replies may be out of step, and keeping a dead handle would make
@@ -135,6 +137,36 @@ HANTEKWRAPPER_API short __stdcall dsoReadHardData_LA(unsigned short DeviceIndex,
             ResetPipe();
             return -1;
         }
+    }
+    return responseCode;
+}
+
+HANTEKWRAPPER_API short __stdcall dsoSetVoltDIV(unsigned short DeviceIndex, int nCH, int nVoltDIV) {
+    char buffer[14]; // 4 (cmd), 2 (index), 4 (channel), 4 (voltDiv)
+    *reinterpret_cast<int*>(buffer) = 4; // Command 4
+    *reinterpret_cast<unsigned short*>(buffer + 4) = DeviceIndex;
+    *reinterpret_cast<int*>(buffer + 6) = nCH;
+    *reinterpret_cast<int*>(buffer + 10) = nVoltDIV;
+    short response = -1;
+    if (!SendAndReceive(buffer, sizeof(buffer), &response, sizeof(response))) return -1;
+    return response;
+}
+
+HANTEKWRAPPER_API short __stdcall dsoGetCalLevel(unsigned short DeviceIndex, short* level, short nLen) {
+    if (g_pipe == INVALID_HANDLE_VALUE) return -1;
+    if (!level || nLen <= 0 || nLen > MAX_CAL_LEN) return -2;
+
+    char buffer[8]; // 4 (cmd), 2 (index), 2 (length)
+    *reinterpret_cast<int*>(buffer) = 5; // Command 5
+    *reinterpret_cast<unsigned short*>(buffer + 4) = DeviceIndex;
+    *reinterpret_cast<short*>(buffer + 6) = nLen;
+    short responseCode = -1;
+    if (!SendAndReceive(buffer, sizeof(buffer), &responseCode, sizeof(responseCode))) return -1;
+
+    // The calibration levels follow only a successful read
+    if (responseCode > 0 && !ReadMessage(level, nLen * sizeof(short))) {
+        ResetPipe();
+        return -1;
     }
     return responseCode;
 }

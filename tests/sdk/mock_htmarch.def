@@ -3,3 +3,5 @@ dsoOpenDevice
 dsoChooseDevice
 dsoSetTimeDIV
 dsoReadHardData_LA
+dsoSetVoltDIV
+dsoGetCalLevel

@@ -21,8 +21,14 @@ DEVICE_TYPE = uint16(1);        % argument of dsoChooseDevice (HTMarch only chec
 SAMPLE_RATE = int16(0);         % nTimeDIV index of HTMarch.dll, see SamplingLUT below:
                                 % 0-10 = 48 MSa/s, 11 = 16 MSa/s, 12 = 8 MSa/s, 13 = 4 MSa/s,
                                 % 14-24 = 1 MSa/s, 25 = 500 kSa/s, 26 = 200 kSa/s, 27-38 = 100 kSa/s
+VOLT_DIV = [5 5];               % nVoltDIV for CH1, CH2: 0 = 20 mV, 1 = 50 mV, 2 = 100 mV, 3 = 200 mV,
+                                % 4 = 500 mV, 5 = 1 V, 6 = 2 V, 7 = 5 V per div. Only the hardware
+                                % gain matters for the data: 10,10,10,5,2,1,1,1 -> the input range is
+                                % about +-5.12 V / gain (e.g. 5 -> +-5.12 V, 4 -> +-2.56 V, 2 -> +-0.51 V)
 BUFFER_SIZE = uint32(bufferSize);     % Number of samples to capture
 NUM_CAPTURES = 2;              % Number of captures (each one is a separate acquisition)
+SAVE_CALIBRATION = true;       % save the scope's factory zero levels to hantek_cal.mat
+                               % (the libusb path uses them: its firmware cannot read the EEPROM)
 SamplingRate = SamplingLUT(SAMPLE_RATE);
 
 MAX_READ_LEN = 1047552;         % HTMarch captures 1048576 samples and drops the first 1024
@@ -30,12 +36,24 @@ SKIPPED_SAMPLES = 1024;
 if bufferSize < 1 || bufferSize > MAX_READ_LEN || bufferSize ~= round(bufferSize)
     error('bufferSize must be an integer 1..%d', MAX_READ_LEN);
 end
+if numel(VOLT_DIV) ~= 2 || any(VOLT_DIV < 0 | VOLT_DIV > 7 | VOLT_DIV ~= round(VOLT_DIV))
+    error('VOLT_DIV must be two integers 0..7');
+end
 fprintf('Sample rate %g Sa/s: every capture takes at least %.3f s (1048576 samples are recorded)\n', ...
     SamplingRate, 1048576 / SamplingRate);
 
 try
     %% Initialize & Configure Device
-    InitHantek6022(DEVICE_INDEX, DEVICE_TYPE, SAMPLE_RATE)
+    cal = InitHantek6022(DEVICE_INDEX, DEVICE_TYPE, SAMPLE_RATE, VOLT_DIV);
+    if SAVE_CALIBRATION && ~isempty(cal)
+        calInfo = ['Factory zero levels of the Hantek 6022 (dsoGetCalLevel, raw ADC counts). ' ...
+                   'Index (1-based): 16*hs + 2*nVoltDIV + ch + 1, hs = 1 at 48 MSa/s, ch = 0 CH1 / 1 CH2.'];
+        save('hantek_cal.mat', 'cal', 'calInfo');
+        fprintf('Calibration saved to %s\n', fullfile(pwd, 'hantek_cal.mat'));
+    end
+    % Zero level (raw counts) of each channel for the chosen volt/div and rate
+    zero = ZeroLevels(cal, VOLT_DIV, SAMPLE_RATE <= 10);
+    fprintf('Zero levels: CH1 %g, CH2 %g counts\n', zero(1), zero(2));
 
     % Preallocate storage for multiple captures
     data = struct(...
@@ -69,8 +87,8 @@ try
         raw1 = double(ch1.Value);
         raw2 = double(ch2.Value);
         data.clipped = data.clipped + [sum(raw1 <= 0 | raw1 >= 255), sum(raw2 <= 0 | raw2 >= 255)];
-        data.ch1(:,i) = (raw1 - 128)/2^6;
-        data.ch2(:,i) = (raw2 - 128)/2^6;
+        data.ch1(:,i) = Raw2Volts(raw1, zero(1), VOLT_DIV(1));
+        data.ch2(:,i) = Raw2Volts(raw2, zero(2), VOLT_DIV(2));
 
         waitbar(i/NUM_CAPTURES, hWait, sprintf('Capture %d/%d', i, NUM_CAPTURES));
     end
@@ -104,14 +122,14 @@ function AnalyzeData(data)
     plot(t(:), y1(:));
     title('Channel 1');
     xlabel('Time (ms)');
-    ylabel('Value');
+    ylabel('Voltage (V)');
     grid on;
 
     subplot(2,1,2);
     plot(t(:), y2(:));
     title('Channel 2');
     xlabel('Time (ms)');
-    ylabel('Value');
+    ylabel('Voltage (V)');
     grid on;
 
     % Statistics
@@ -122,10 +140,11 @@ function AnalyzeData(data)
         gaps = data.time(1, 2:end) - data.time(end, 1:end-1);
         fprintf('  Gap between captures: %.1f .. %.1f ms\n', min(gaps), max(gaps));
     end
-    fprintf('  CH1 Range: [%g, %g]\n', min(data.ch1(:)), max(data.ch1(:)));
-    fprintf('  CH2 Range: [%g, %g]\n', min(data.ch2(:)), max(data.ch2(:)));
+    fprintf('  CH1 Range: [%.3f, %.3f] V\n', min(data.ch1(:)), max(data.ch1(:)));
+    fprintf('  CH2 Range: [%.3f, %.3f] V\n', min(data.ch2(:)), max(data.ch2(:)));
     if any(data.clipped)
-        warning('Clipping: %d (CH1) / %d (CH2) samples at the ADC limits 0 or 255.', ...
+        warning(['Clipping: %d (CH1) / %d (CH2) samples at the ADC limits 0 or 255. ' ...
+                 'Use a larger VOLT_DIV (lower gain) for that channel.'], ...
             data.clipped(1), data.clipped(2));
     end
 end
@@ -197,9 +216,10 @@ function stopHantekProxy()
 end
 
 %% InitHantek6022
-% Connects to HantekProxy.exe, opens the instrument, selects the mode and sets
-% the sampling rate. Throws an error if any step fails.
-function InitHantek6022(DEVICE_INDEX, DEVICE_TYPE, SAMPLE_RATE)
+% Connects to HantekProxy.exe, opens the instrument, selects the mode, sets the
+% sampling rate and volt/div and reads the factory calibration (empty if it
+% could not be read). Throws an error if any setting fails.
+function cal = InitHantek6022(DEVICE_INDEX, DEVICE_TYPE, SAMPLE_RATE, VOLT_DIV)
     startHantekProxy();
     fprintf('\nInitializing device...\n');
     if calllib('HantekWrapper', 'connectToProxy') ~= 1
@@ -218,7 +238,46 @@ function InitHantek6022(DEVICE_INDEX, DEVICE_TYPE, SAMPLE_RATE)
     if ret ~= 1
         error('dsoSetTimeDIV(%d) returned %d', SAMPLE_RATE, ret);
     end
+    for ch = 1:2
+        ret = calllib('HantekWrapper', 'dsoSetVoltDIV', DEVICE_INDEX, ch - 1, VOLT_DIV(ch));
+        if ret ~= 1
+            error('dsoSetVoltDIV(CH%d, %d) returned %d', ch, VOLT_DIV(ch), ret);
+        end
+    end
+    [ret, cal] = calllib('HantekWrapper', 'dsoGetCalLevel', DEVICE_INDEX, zeros(32, 1, 'int16'), int16(32));
+    if ret == 1
+        cal = double(cal);
+    else
+        warning('dsoGetCalLevel returned %d: using the nominal zero level 128', ret);
+        cal = [];
+    end
     fprintf('Device is open. Ready for use\n');
+end
+
+function zero = ZeroLevels(cal, VOLT_DIV, highSpeed)
+    % Zero level of CH1 and CH2 in raw counts. The factory levels are stored
+    % like HTMarch.dll's dsoReadHardData uses them: cal(16*hs + 2*nVoltDIV + ch + 1).
+    zero = [128 128];
+    if isempty(cal)
+        return
+    end
+    for ch = 1:2
+        z = cal(16 * highSpeed + 2 * VOLT_DIV(ch) + ch);
+        if z >= 96 && z <= 160
+            zero(ch) = z;
+        else
+            warning('Calibration level %g for CH%d looks wrong (EEPROM empty?): using 128', z, ch);
+        end
+    end
+end
+
+function volts = Raw2Volts(raw, zero, voltDiv)
+    % Raw ADC counts -> volts. HTMarch.dll's own scale factors correspond to
+    % 25 counts per volt at gain 1 (+-5.12 V full scale), 25*gain in general.
+    % This is the nominal value; check it once against a known voltage.
+    GAIN = [10 10 10 5 2 1 1 1];           % hardware gain per nVoltDIV (from HTMarch.dll)
+    COUNTS_PER_VOLT = 25;
+    volts = (double(raw) - zero) / (COUNTS_PER_VOLT * GAIN(voltDiv + 1));
 end
 
 function samplingRate = SamplingLUT(timeDiv)
