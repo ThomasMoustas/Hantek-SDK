@@ -141,12 +141,17 @@ int main() {
                     }
                     case 3: { // dsoReadHardData_LA
                         unsigned long nReadLen = *reinterpret_cast<unsigned long*>(buffer + 6);
-                        int nTimeDIV = *reinterpret_cast<int*>(buffer + 10);
+                        // buffer + 10 holds the client's nTimeDIV, which is deliberately not
+                        // forwarded: the last argument of HTMarch's dsoReadHardData_LA is an
+                        // index into an internal 8-entry table of capture sizes, and values
+                        // >= 8 read past that table (garbage data or a crash). All 8 entries
+                        // are equal, so 0 is always correct; the sample rate itself is set
+                        // with dsoSetTimeDIV (command 2).
                         
                         short* pData1 = new short[nReadLen];
                         short* pData2 = new short[nReadLen];
                         
-                        short result = dsoReadHardData_LA(deviceIndex, pData1, pData2, nReadLen, nTimeDIV);
+                        short result = dsoReadHardData_LA(deviceIndex, pData1, pData2, nReadLen, 0);
                         
                         WriteFile(pipe, &result, sizeof(result), &written, NULL);
                         if (result != -1) {
