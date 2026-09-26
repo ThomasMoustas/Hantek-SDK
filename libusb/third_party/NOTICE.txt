@@ -1,0 +1,14 @@
+Third-party components used by the libusb path (see ../README.md, "Άδειες τρίτων")
+
+libusb-1.0.29.tar.bz2
+  libusb 1.0.29, https://libusb.info - LGPL-2.1-or-later (COPYING inside the archive).
+  Linked statically into ../HantekUSB.dll; ../build_libusb.sh rebuilds the DLL from
+  this archive, so it can be relinked with a modified libusb.
+  sha256 5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85
+
+sigrok-firmware-fx2lafw-0.1.7.tar.gz
+  sigrok-firmware-fx2lafw 0.1.7, https://sigrok.org/wiki/Fx2lafw - GPL-2.0-or-later,
+  parts LGPL-2.1-or-later (COPYING, COPYING.LESSER inside the archive).
+  Complete source of ../fx2lafw-hantek-6022bl.fw and ../fx2lafw-hantek-6022be.fw,
+  which are the binaries of the Ubuntu 24.04 package sigrok-firmware-fx2lafw 0.1.7-1
+  built from it.
